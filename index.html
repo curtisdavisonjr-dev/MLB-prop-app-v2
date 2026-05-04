@@ -2,320 +2,196 @@
 <html>
 <head>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sharp MLB Batter Props</title>
+<title>MLB Sharp Parlay Builder</title>
+
 <style>
 body{background:#071b12;color:white;font-family:Arial;padding:16px}
-input,button,select{width:100%;padding:12px;margin:7px 0;border:0;border-radius:10px;font-size:16px}
+input,button{width:100%;padding:12px;margin:7px 0;border:0;border-radius:10px}
 button{background:#20c063;color:#031006;font-weight:bold}
 .card{background:#123322;padding:12px;margin:10px 0;border-radius:12px}
+.good{color:#37ff8b}
+.bad{color:#ff7777}
 .small{color:#b7d8c3;font-size:13px}
-.good{color:#37ff8b;font-weight:bold}
-.bad{color:#ff7777;font-weight:bold}
-.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:7px}
-.grid button{margin:0}
+.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}
 </style>
 </head>
 
 <body>
-<h1>⚾ Sharp MLB Batter Props</h1>
-<div class="small">Batter props only • 2–10 leg parlay builder</div>
+
+<h1>⚾ Sharp MLB Parlay Builder</h1>
 
 <input id="apiKey" placeholder="Paste Odds API Key">
 <button onclick="saveKey()">Save Key</button>
-<button onclick="loadAll()">Load Today’s Sharp Props</button>
+<button onclick="loadAll()">Load Props</button>
 
+<h2>Filter Props</h2>
 <div class="grid">
-<button onclick="buildParlay(2)">2 Legs</button>
-<button onclick="buildParlay(3)">3 Legs</button>
-<button onclick="buildParlay(4)">4 Legs</button>
-<button onclick="buildParlay(5)">5 Legs</button>
-<button onclick="buildParlay(6)">6 Legs</button>
-<button onclick="buildParlay(7)">7 Legs</button>
-<button onclick="buildParlay(8)">8 Legs</button>
-<button onclick="buildParlay(9)">9 Legs</button>
-<button onclick="buildParlay(10)">10 Legs</button>
+<button onclick="setFilter('all')">All</button>
+<button onclick="setFilter('batter_hits')">Hits</button>
+<button onclick="setFilter('batter_runs_scored')">Runs</button>
+<button onclick="setFilter('batter_rbis')">RBIs</button>
+<button onclick="setFilter('batter_total_bases')">Total Bases</button>
+<button onclick="setFilter('batter_home_runs')">HR</button>
+<button onclick="setFilter('batter_hits_runs_rbis')">H+R+RBI</button>
 </div>
 
-<h2>Top Props</h2>
-<div id="props">Paste API key, then tap load.</div>
+<h2>Build Parlay</h2>
+<div class="grid">
+<button onclick="buildParlay(2)">2</button>
+<button onclick="buildParlay(3)">3</button>
+<button onclick="buildParlay(4)">4</button>
+<button onclick="buildParlay(5)">5</button>
+<button onclick="buildParlay(6)">6</button>
+<button onclick="buildParlay(7)">7</button>
+<button onclick="buildParlay(8)">8</button>
+<button onclick="buildParlay(9)">9</button>
+<button onclick="buildParlay(10)">10</button>
+</div>
 
-<h2>Your Parlay</h2>
+<h2>Props</h2>
+<div id="props">Load data...</div>
+
+<h2>Parlay</h2>
 <div id="parlay"></div>
 
 <script>
-let props = [];
-let gameContext = {};
+let props=[]
+let activeFilter="all"
 
-const MARKETS = [
-  "batter_hits",
-  "batter_runs_scored",
-  "batter_rbis",
-  "batter_total_bases",
-  "batter_home_runs",
-  "batter_hits_runs_rbis"
-];
-
-document.getElementById("apiKey").value =
-  localStorage.getItem("ODDS_KEY") || "";
+const MARKETS=[
+"batter_hits",
+"batter_runs_scored",
+"batter_rbis",
+"batter_total_bases",
+"batter_home_runs",
+"batter_hits_runs_rbis"
+]
 
 function saveKey(){
-  localStorage.setItem("ODDS_KEY", document.getElementById("apiKey").value.trim());
-  alert("Key saved");
+localStorage.setItem("key",document.getElementById("apiKey").value)
 }
 
-function todayISO(){
-  return new Date().toISOString().slice(0,10);
+function setFilter(f){
+activeFilter=f
+render()
 }
 
-function impliedProb(odds){
-  odds = Number(odds);
-  return odds > 0 ? 100 / (odds + 100) : Math.abs(odds) / (Math.abs(odds) + 100);
-}
+function imp(o){return o>0?100/(o+100):Math.abs(o)/(Math.abs(o)+100)}
+function dec(o){return o>0?1+o/100:1+100/Math.abs(o)}
+function ev(p,o){return p*dec(o)-1}
 
-function decimalOdds(odds){
-  odds = Number(odds);
-  return odds > 0 ? 1 + odds / 100 : 1 + 100 / Math.abs(odds);
-}
-
-function noVigProb(overOdds, underOdds){
-  const over = impliedProb(overOdds);
-  const under = impliedProb(underOdds);
-  return over / (over + under);
-}
-
-function calcEV(prob, odds){
-  return prob * decimalOdds(odds) - 1;
-}
-
-function sharpBoost(market, ctx){
-  let boost = 0;
-
-  if(market === "batter_hits") boost += 0.025;
-  if(market === "batter_total_bases") boost += 0.02;
-  if(market === "batter_hits_runs_rbis") boost += 0.018;
-  if(market === "batter_rbis") boost += 0.012;
-  if(market === "batter_runs_scored") boost += 0.012;
-  if(market === "batter_home_runs") boost -= 0.006;
-
-  if(ctx && ctx.hasProbablePitchers) boost += 0.006;
-  if(ctx && ctx.venueBoost) boost += ctx.venueBoost;
-
-  return boost;
-}
-
-async function loadGameContext(){
-  gameContext = {};
-  const date = todayISO();
-
-  const url =
-    `https://statsapi.mlb.com/api/v1/schedule?sportId=1&date=${date}&hydrate=probablePitcher,venue`;
-
-  try{
-    const res = await fetch(url);
-    const data = await res.json();
-
-    const games = data.dates?.[0]?.games || [];
-
-    games.forEach(g => {
-      const id = g.gamePk;
-      const homePitcher = g.teams?.home?.probablePitcher?.fullName || "";
-      const awayPitcher = g.teams?.away?.probablePitcher?.fullName || "";
-      const venue = g.venue?.name || "";
-
-      let venueBoost = 0;
-      const hitterParks = ["Coors Field", "Great American Ball Park", "Fenway Park", "Citizens Bank Park"];
-      if(hitterParks.some(v => venue.includes(v))) venueBoost = 0.01;
-
-      gameContext[id] = {
-        homePitcher,
-        awayPitcher,
-        venue,
-        hasProbablePitchers: !!(homePitcher && awayPitcher),
-        venueBoost
-      };
-    });
-  }catch(e){}
+function boost(m){
+if(m==="batter_hits")return .035
+if(m==="batter_total_bases")return .03
+if(m==="batter_hits_runs_rbis")return .025
+if(m==="batter_rbis")return .02
+if(m==="batter_runs_scored")return .02
+if(m==="batter_home_runs")return -.01
+return 0
 }
 
 async function loadAll(){
-  const key = document.getElementById("apiKey").value.trim();
+let key=document.getElementById("apiKey").value
+props=[]
+document.getElementById("props").innerHTML="Loading..."
 
-  if(!key){
-    alert("Paste your Odds API key first");
-    return;
-  }
+let events=await fetch(`https://api.the-odds-api.com/v4/sports/baseball_mlb/events?apiKey=${key}`)
+events=await events.json()
 
-  props = [];
-  document.getElementById("props").innerHTML = "Loading MLB schedule context...";
-  document.getElementById("parlay").innerHTML = "";
+for(let g of events){
 
-  await loadGameContext();
+let odds=await fetch(`https://api.the-odds-api.com/v4/sports/baseball_mlb/events/${g.id}/odds?apiKey=${key}&regions=us&markets=${MARKETS.join(",")}`)
+odds=await odds.json()
 
-  document.getElementById("props").innerHTML = "Loading MLB odds...";
+if(!odds.bookmakers)continue
 
-  try{
-    const eventsUrl =
-      `https://api.the-odds-api.com/v4/sports/baseball_mlb/events?apiKey=${key}`;
+odds.bookmakers.forEach(b=>{
+b.markets.forEach(m=>{
+let map={}
 
-    const eventsRes = await fetch(eventsUrl);
-    const events = await eventsRes.json();
+m.outcomes.forEach(o=>{
+let name=o.description||o.name
+if(!map[name])map[name]={}
+if(o.name.toLowerCase().includes("over"))map[name].o=o
+if(o.name.toLowerCase().includes("under"))map[name].u=o
+})
 
-    if(!Array.isArray(events)){
-      document.getElementById("props").innerHTML =
-        "Could not load events. Check API key or Odds API plan.";
-      return;
-    }
+Object.keys(map).forEach(p=>{
+let x=map[p]
+if(!x.o||!x.u)return
 
-    for(const game of events){
-      document.getElementById("props").innerHTML =
-        `Loading ${game.away_team} @ ${game.home_team}...`;
+let fair=imp(x.o.price)/(imp(x.o.price)+imp(x.u.price))
+let model=Math.min(.95,Math.max(.01,fair+boost(m.key)))
+let edge=ev(model,x.o.price)
 
-      const oddsUrl =
-        `https://api.the-odds-api.com/v4/sports/baseball_mlb/events/${game.id}/odds` +
-        `?apiKey=${key}&regions=us&markets=${MARKETS.join(",")}&oddsFormat=american`;
+props.push({
+player:p,
+gameId:g.id,
+game:g.home_team+" vs "+g.away_team,
+market:m.key,
+line:x.o.point||"",
+odds:x.o.price,
+ev:edge
+})
+})
 
-      const res = await fetch(oddsUrl);
-      const data = await res.json();
-
-      if(!data.bookmakers) continue;
-
-      data.bookmakers.forEach(book => {
-        book.markets.forEach(market => {
-          const grouped = {};
-
-          market.outcomes.forEach(o => {
-            const player = o.description || o.name;
-            if(!grouped[player]) grouped[player] = {};
-
-            const label = String(o.name).toLowerCase();
-            if(label.includes("over")) grouped[player].over = o;
-            if(label.includes("under")) grouped[player].under = o;
-          });
-
-          Object.keys(grouped).forEach(player => {
-            const pair = grouped[player];
-            if(!pair.over || !pair.under) return;
-
-            const ctx = gameContext[game.commence_time] || {};
-
-            const fair = noVigProb(pair.over.price, pair.under.price);
-            let model = fair + sharpBoost(market.key, ctx);
-
-            model = Math.max(0.01, Math.min(0.95, model));
-
-            const edge = calcEV(model, pair.over.price);
-
-            props.push({
-              player,
-              gameId: game.id,
-              game: `${game.away_team} @ ${game.home_team}`,
-              market: market.key,
-              book: book.title,
-              line: pair.over.point ?? "",
-              odds: pair.over.price,
-              fair,
-              model,
-              ev: edge,
-              venue: ctx.venue || "",
-              homePitcher: ctx.homePitcher || "",
-              awayPitcher: ctx.awayPitcher || ""
-            });
-          });
-        });
-      });
-    }
-
-    props.sort((a,b)=>b.ev-a.ev);
-    renderProps();
-
-  }catch(e){
-    document.getElementById("props").innerHTML =
-      "Error loading props. Check API key, Odds API plan, or internet.";
-  }
+})
+})
 }
 
-function renderProps(){
-  if(!props.length){
-    document.getElementById("props").innerHTML =
-      "No batter props found. Your Odds API plan may not include player props today.";
-    return;
-  }
-
-  document.getElementById("props").innerHTML =
-    props.slice(0,60).map((p,i)=>`
-      <div class="card">
-        <strong>${i+1}. ${p.player}</strong>
-        <div>${formatMarket(p.market)} Over ${p.line} (${p.odds})</div>
-        <div class="small">${p.game}</div>
-        <div class="small">${p.book}</div>
-        <div>Model: ${(p.model*100).toFixed(1)}%</div>
-        <div>Fair: ${(p.fair*100).toFixed(1)}%</div>
-        <div class="${p.ev > 0 ? "good" : "bad"}">EV: ${(p.ev*100).toFixed(2)}%</div>
-      </div>
-    `).join("");
+props.sort((a,b)=>b.ev-a.ev)
+render()
 }
 
-function buildParlay(legs){
-  const selected = [];
-  const usedPlayers = new Set();
-  const gameCounts = {};
+function render(){
+let list=activeFilter==="all"?props:props.filter(p=>p.market===activeFilter)
 
-  const candidates = props
-    .filter(p => p.ev > 0)
-    .sort((a,b)=>b.ev-a.ev);
-
-  for(const p of candidates){
-    if(selected.length >= legs) break;
-    if(usedPlayers.has(p.player)) continue;
-
-    const count = gameCounts[p.gameId] || 0;
-    if(count >= 2) continue;
-
-    selected.push(p);
-    usedPlayers.add(p.player);
-    gameCounts[p.gameId] = count + 1;
-  }
-
-  if(selected.length < legs){
-    document.getElementById("parlay").innerHTML =
-      `Only found ${selected.length} +EV legs. Try a smaller parlay.`;
-    return;
-  }
-
-  let decimal = 1;
-  selected.forEach(p => decimal *= decimalOdds(p.odds));
-
-  const american =
-    decimal >= 2
-    ? Math.round((decimal - 1) * 100)
-    : Math.round(-100 / (decimal - 1));
-
-  document.getElementById("parlay").innerHTML = `
-    <div class="card">
-      <strong>${legs}-Leg Sharp Parlay</strong>
-      <div class="good">Approx payout: ${american > 0 ? "+" : ""}${american}</div>
-      <div class="small">No duplicate players • Max 2 props per game</div>
-    </div>
-    ${selected.map((p,i)=>`
-      <div class="card">
-        <strong>${i+1}. ${p.player}</strong>
-        <div>${formatMarket(p.market)} Over ${p.line} (${p.odds})</div>
-        <div class="small">${p.game} • ${p.book}</div>
-        <div class="good">EV ${(p.ev*100).toFixed(2)}%</div>
-      </div>
-    `).join("")}
-  `;
+document.getElementById("props").innerHTML=
+list.slice(0,50).map(p=>`
+<div class="card">
+<b>${p.player}</b><br>
+${format(p.market)} O${p.line} (${p.odds})<br>
+${p.game}<br>
+<span class="${p.ev>0?"good":"bad"}">EV ${(p.ev*100).toFixed(1)}%</span>
+</div>`).join("")
 }
 
-function formatMarket(m){
-  return m
-    .replace("batter_hits_runs_rbis","Hits + Runs + RBIs")
-    .replace("batter_total_bases","Total Bases")
-    .replace("batter_runs_scored","Runs")
-    .replace("batter_home_runs","Home Runs")
-    .replace("batter_hits","Hits")
-    .replace("batter_rbis","RBIs");
+function buildParlay(n){
+let used=new Set()
+let gameCount={}
+let picks=[]
+
+for(let p of props){
+if(picks.length>=n)break
+if(p.ev<=0)continue
+if(used.has(p.player))continue
+
+let g=gameCount[p.gameId]||0
+if(g>=2)continue
+
+picks.push(p)
+used.add(p.player)
+gameCount[p.gameId]=g+1
+}
+
+document.getElementById("parlay").innerHTML=
+picks.map((p,i)=>`
+<div class="card">
+${i+1}. ${p.player}<br>
+${format(p.market)} O${p.line} (${p.odds})
+</div>`).join("")
+}
+
+function format(m){
+return m
+.replace("batter_hits","Hits")
+.replace("batter_runs_scored","Runs")
+.replace("batter_rbis","RBIs")
+.replace("batter_total_bases","Total Bases")
+.replace("batter_home_runs","HR")
+.replace("batter_hits_runs_rbis","H+R+RBI")
 }
 </script>
+
 </body>
 </html>
