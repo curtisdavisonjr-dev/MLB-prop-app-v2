@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MLB Prop App</title>
+<style>
+body{background:#071b12;color:white;font-family:Arial;padding:16px}
+h1{margin-bottom:5px}
+select,input,button{width:100%;padding:12px;margin:8px 0;border-radius:10px;border:0;font-size:16px}
+.card{background:#123322;padding:12px;margin:10px 0;border-radius:12px}
+.small{color:#b7d8c3;font-size:13px}
+.badge{display:inline-block;background:#1f7a45;padding:4px 8px;border-radius:20px;margin-top:6px}
+button{background:#20c063;color:#031006;font-weight:bold}
+</style>
+</head>
+
+<body>
+<h1>⚾ MLB Prop Builder</h1>
+<div class="small">Live 2026 active roster data</div>
+
+<select id="teamSelect"></select>
+<input id="search" placeholder="Search player..." />
+<button onclick="buildParlay()">Build 10-Leg Parlay</button>
+
+<h2>Players</h2>
+<div id="players">Loading...</div>
+
+<h2>Parlay</h2>
+<div id="parlay"></div>
+
+<script>
+let teams = [];
+let players = [];
+
+async function loadTeams(){
+  const res = await fetch("https://statsapi.mlb.com/api/v1/teams?sportId=1&season=2026");
+  const data = await res.json();
+
+  teams = data.teams;
+
+  document.getElementById("teamSelect").innerHTML =
+    teams.map(t => `<option value="${t.id}">${t.name}</option>`).join("");
+
+  loadRoster(teams[0].id);
+}
+
+async function loadRoster(teamId){
+  const team = teams.find(t => t.id == teamId);
+
+  const res = await fetch(
+    `https://statsapi.mlb.com/api/v1/teams/${teamId}/roster?rosterType=active&season=2026`
+  );
+  const data = await res.json();
+
+  players = data.roster.map(p => ({
+    name: p.person.fullName,
+    team: team.name,
+    pos: p.position.abbreviation,
+    score: Math.floor(Math.random()*100)
+  }));
+
+  renderPlayers();
+}
+
+function renderPlayers(){
+  const q = document.getElementById("search").value.toLowerCase();
+
+  document.getElementById("players").innerHTML =
+    players
+      .filter(p => p.name.toLowerCase().includes(q))
+      .map(p => `
+        <div class="card">
+          <strong>${p.name}</strong>
+          <div class="small">${p.team} • ${p.pos}</div>
+          <div class="badge">Score: ${p.score}</div>
+        </div>
+      `).join("");
+}
+
+function buildParlay(){
+  const picks = players
+    .filter(p => p.pos !== "P")
+    .sort((a,b)=>b.score-a.score)
+    .slice(0,10);
+
+  document.getElementById("parlay").innerHTML =
+    picks.map((p,i)=>`
+      <div class="card">
+        ${i+1}. ${p.name} — Hit/RBI
+      </div>
+    `).join("");
+}
+
+document.getElementById("teamSelect").onchange = e => loadRoster(e.target.value);
+document.getElementById("search").oninput = renderPlayers;
+
+loadTeams();
+</script>
+</body>
+</html>
