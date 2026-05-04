@@ -21,7 +21,7 @@ button.active{background:#ffffff;color:#071b12}
 <body>
 
 <h1>⚾ Elite MLB Batter Props</h1>
-<div class="small">Real odds • Batter props only • 2–10 leg builder</div>
+<div class="small">Hybrid score = EV + matchup + park + line difficulty</div>
 
 <input id="apiKey" placeholder="Paste Odds API Key">
 <button onclick="saveKey()">Save Key</button>
@@ -60,6 +60,8 @@ button.active{background:#ffffff;color:#071b12}
 <script>
 let props = [];
 let activeFilter = "all";
+let gameContext = {};
+let playerTeamMap = {};
 
 const MARKETS = [
   "batter_hits",
@@ -83,11 +85,13 @@ function saveKey(){
 
 function setFilter(filter, btn){
   activeFilter = filter;
-
   document.querySelectorAll(".grid button").forEach(b => b.classList.remove("active"));
   if(btn) btn.classList.add("active");
-
   render();
+}
+
+function todayISO(){
+  return new Date().toISOString().slice(0,10);
 }
 
 function impliedProb(odds){
@@ -114,12 +118,153 @@ function marketGroup(market){
   if(market.includes("home_runs")) return "batter_home_runs";
   if(market.includes("total_bases")) return "batter_total_bases";
   if(market.includes("hits_runs_rbis")) return "batter_hits_runs_rbis";
+  if(market.includes("runs_scored")) return "batter_runs_scored";
+  if(market.includes("rbis")) return "batter_rbis";
   if(market.includes("hits")) return "batter_hits";
   return market;
 }
 
-function eliteBoost(market, odds, line){
+function normalizeName(name){
+  return String(name || "")
+    .toLowerCase()
+    .replace(/[^a-z ]/g,"")
+    .replace(/\s+/g," ")
+    .trim();
+}
+
+async function loadMLBContext(){
+  gameContext = {};
+  playerTeamMap = {};
+
+  const date = todayISO();
+
+  try{
+    const scheduleUrl =
+      `https://statsapi.mlb.com/api/v1/schedule?sportId=1&date=${date}&hydrate=probablePitcher,venue,team`;
+
+    const scheduleRes = await fetch(scheduleUrl);
+    const scheduleData = await scheduleRes.json();
+
+    const games = scheduleData.dates?.[0]?.games || [];
+
+    games.forEach(g => {
+      const homeTeam = g.teams?.home?.team?.name || "";
+      const awayTeam = g.teams?.away?.team?.name || "";
+
+      const homePitcher = g.teams?.home?.probablePitcher?.fullName || "TBD";
+      const awayPitcher = g.teams?.away?.probablePitcher?.fullName || "TBD";
+
+      const venue = g.venue?.name || "";
+
+      let parkBoost = 0;
+      const hitterParks = [
+        "Coors Field",
+        "Great American Ball Park",
+        "Fenway Park",
+        "Citizens Bank Park",
+        "Yankee Stadium",
+        "Globe Life Field"
+      ];
+
+      if(hitterParks.some(v => venue.includes(v))) parkBoost = 4;
+
+      gameContext[g.gamePk] = {
+        homeTeam,
+        awayTeam,
+        homePitcher,
+        awayPitcher,
+        venue,
+        parkBoost
+      };
+
+      gameContext[`${awayTeam} @ ${homeTeam}`] = gameContext[g.gamePk];
+      gameContext[`${homeTeam} vs ${awayTeam}`] = gameContext[g.gamePk];
+    });
+
+    const teamsRes = await fetch(`https://statsapi.mlb.com/api/v1/teams?sportId=1&season=2026`);
+    const teamsData = await teamsRes.json();
+
+    const teams = teamsData.teams || [];
+
+    for(const team of teams){
+      try{
+        const rosterRes = await fetch(
+          `https://statsapi.mlb.com/api/v1/teams/${team.id}/roster?rosterType=active&season=2026`
+        );
+        const rosterData = await rosterRes.json();
+
+        (rosterData.roster || []).forEach(p => {
+          const playerName = p.person?.fullName || "";
+          if(playerName){
+            playerTeamMap[normalizeName(playerName)] = team.name;
+          }
+        });
+      }catch(e){}
+    }
+
+  }catch(e){
+    console.log("MLB context failed", e);
+  }
+}
+
+function getOpponentPitcher(player, game){
+  const playerTeam = playerTeamMap[normalizeName(player)];
+  const ctx = gameContext[game];
+
+  if(!ctx || !playerTeam){
+    return {
+      playerTeam: playerTeam || "Unknown team",
+      pitcher: "TBD",
+      venue: ctx?.venue || "",
+      parkBoost: ctx?.parkBoost || 0
+    };
+  }
+
+  let pitcher = "TBD";
+
+  if(playerTeam === ctx.homeTeam){
+    pitcher = ctx.awayPitcher;
+  }else if(playerTeam === ctx.awayTeam){
+    pitcher = ctx.homePitcher;
+  }
+
+  return {
+    playerTeam,
+    pitcher,
+    venue: ctx.venue,
+    parkBoost: ctx.parkBoost
+  };
+}
+
+function matchupScore(market, odds, line, matchup){
+  const group = marketGroup(market);
+  let score = 50;
+
+  if(group === "batter_hits") score += 9;
+  if(group === "batter_total_bases") score += 8;
+  if(group === "batter_hits_runs_rbis") score += 7;
+  if(group === "batter_rbis") score += 5;
+  if(group === "batter_runs_scored") score += 5;
+  if(group === "batter_home_runs") score += 2;
+
+  if(matchup.pitcher && matchup.pitcher !== "TBD") score += 6;
+  if(matchup.playerTeam && matchup.playerTeam !== "Unknown team") score += 4;
+  if(matchup.parkBoost) score += matchup.parkBoost;
+
+  if(Number(odds) > 250) score -= 8;
+  if(Number(odds) > 400) score -= 12;
+
+  if(Number(line) >= 2.5 && group !== "batter_hits_runs_rbis") score -= 5;
+  if(Number(line) >= 3.5) score -= 8;
+
+  if(market.includes("alternate")) score -= 6;
+
+  return Math.max(1, Math.min(100, score));
+}
+
+function eliteModelProb(fair, market, odds, line, matchup){
   let boost = 0;
+
   const group = marketGroup(market);
 
   if(group === "batter_hits") boost += 0.025;
@@ -127,20 +272,25 @@ function eliteBoost(market, odds, line){
   if(group === "batter_hits_runs_rbis") boost += 0.018;
   if(group === "batter_rbis") boost += 0.012;
   if(group === "batter_runs_scored") boost += 0.012;
-
-  // HRs are high-variance, so regular HR overs get conservative treatment.
   if(group === "batter_home_runs") boost -= 0.006;
 
-  // Avoid blindly juicing huge plus-money long shots.
-  if(Number(odds) > 250) boost -= 0.015;
+  if(matchup.pitcher && matchup.pitcher !== "TBD") boost += 0.006;
+  if(matchup.parkBoost) boost += matchup.parkBoost / 500;
 
-  // Alternate lines are harder; reduce fake edge.
+  if(Number(odds) > 250) boost -= 0.015;
+  if(Number(odds) > 400) boost -= 0.02;
+
   if(market.includes("alternate")) boost -= 0.012;
 
-  // Very high lines are tougher.
   if(Number(line) >= 2.5 && group !== "batter_hits_runs_rbis") boost -= 0.01;
+  if(Number(line) >= 3.5) boost -= 0.015;
 
-  return boost;
+  return Math.max(0.01, Math.min(0.95, fair + boost));
+}
+
+function hybridScore(ev, matchup){
+  const evScore = Math.max(0, Math.min(100, ev * 400));
+  return Math.round((evScore * 0.60) + (matchup * 0.40));
 }
 
 async function loadAll(){
@@ -152,8 +302,12 @@ async function loadAll(){
   }
 
   props = [];
-  document.getElementById("props").innerHTML = "Loading today’s MLB games...";
+  document.getElementById("props").innerHTML = "Loading MLB context...";
   document.getElementById("parlay").innerHTML = "";
+
+  await loadMLBContext();
+
+  document.getElementById("props").innerHTML = "Loading today’s prop odds...";
 
   try{
     const eventsRes = await fetch(
@@ -164,13 +318,15 @@ async function loadAll(){
 
     if(!Array.isArray(events)){
       document.getElementById("props").innerHTML =
-        `<div class="warn">Could not load games. Check your API key or Odds API usage limit.</div>`;
+        `<div class="warn">Could not load games. Check API key or Odds API limit.</div>`;
       return;
     }
 
     for(const game of events){
+      const gameLabel = `${game.away_team} @ ${game.home_team}`;
+
       document.getElementById("props").innerHTML =
-        `Loading props: ${game.away_team} @ ${game.home_team}...`;
+        `Loading props: ${gameLabel}...`;
 
       const oddsUrl =
         `https://api.the-odds-api.com/v4/sports/baseball_mlb/events/${game.id}/odds` +
@@ -178,10 +334,6 @@ async function loadAll(){
 
       const oddsRes = await fetch(oddsUrl);
       const oddsData = await oddsRes.json();
-
-      if(oddsData.message){
-        console.log("Odds API message:", oddsData.message);
-      }
 
       if(!oddsData.bookmakers) continue;
 
@@ -206,17 +358,31 @@ async function loadAll(){
             if(!pair.over || !pair.under) return;
             if(pair.over.price === undefined || pair.under.price === undefined) return;
 
-            const fair = noVigProb(pair.over.price, pair.under.price);
-            let model = fair + eliteBoost(market.key, pair.over.price, pair.over.point);
+            const matchup = getOpponentPitcher(player, gameLabel);
 
-            model = Math.max(0.01, Math.min(0.95, model));
+            const fair = noVigProb(pair.over.price, pair.under.price);
+            const model = eliteModelProb(
+              fair,
+              market.key,
+              pair.over.price,
+              pair.over.point,
+              matchup
+            );
 
             const edge = calcEV(model, pair.over.price);
+            const mScore = matchupScore(
+              market.key,
+              pair.over.price,
+              pair.over.point,
+              matchup
+            );
+
+            const score = hybridScore(edge, mScore);
 
             props.push({
               player,
               gameId: game.id,
-              game: `${game.away_team} @ ${game.home_team}`,
+              game: gameLabel,
               market: market.key,
               group: marketGroup(market.key),
               book: book.title,
@@ -224,19 +390,24 @@ async function loadAll(){
               odds: pair.over.price,
               fair,
               model,
-              ev: edge
+              ev: edge,
+              matchupScore: mScore,
+              hybridScore: score,
+              playerTeam: matchup.playerTeam,
+              opponentPitcher: matchup.pitcher,
+              venue: matchup.venue
             });
           });
         });
       });
     }
 
-    props.sort((a,b) => b.ev - a.ev);
+    props.sort((a,b) => b.hybridScore - a.hybridScore);
     render();
 
   }catch(err){
     document.getElementById("props").innerHTML =
-      `<div class="warn">Error loading props. Check API key, internet, or whether your Odds API plan includes MLB player props.</div>`;
+      `<div class="warn">Error loading props. Check key, internet, or Odds API player-props access.</div>`;
   }
 }
 
@@ -249,24 +420,26 @@ function render(){
   const list = getFilteredProps();
 
   if(!props.length){
-    document.getElementById("props").innerHTML =
-      "No props loaded yet.";
+    document.getElementById("props").innerHTML = "No props loaded yet.";
     return;
   }
 
   if(!list.length){
     document.getElementById("props").innerHTML =
-      `<div class="warn">No ${format(activeFilter)} props found. Some books/API plans do not return every market every day.</div>`;
+      `<div class="warn">No ${format(activeFilter)} props found. Try All or another market.</div>`;
     return;
   }
 
   document.getElementById("props").innerHTML =
-    list.slice(0,60).map((p,i)=>`
+    list.slice(0,75).map((p,i)=>`
       <div class="card">
         <strong>${i+1}. ${p.player}</strong>
         <div>${format(p.market)} Over ${p.line} (${p.odds})</div>
         <div class="small">${p.game}</div>
-        <div class="small">${p.book}</div>
+        <div class="small">Team: ${p.playerTeam || "Unknown"} • Vs pitcher: ${p.opponentPitcher || "TBD"}</div>
+        <div class="small">${p.book}${p.venue ? " • " + p.venue : ""}</div>
+        <div>Hybrid Score: <span class="good">${p.hybridScore}</span></div>
+        <div>Matchup Score: ${p.matchupScore}</div>
         <div>Model: ${(p.model*100).toFixed(1)}%</div>
         <div>Fair: ${(p.fair*100).toFixed(1)}%</div>
         <div class="${p.ev > 0 ? "good" : "bad"}">EV: ${(p.ev*100).toFixed(2)}%</div>
@@ -277,37 +450,38 @@ function render(){
 function buildParlay(legs){
   const selected = [];
   const usedPlayers = new Set();
-  const usedMarketGroups = {};
+  const usedMarkets = {};
   const gameCounts = {};
 
   const candidates = getFilteredProps()
-    .filter(p => p.ev > 0)
-    .sort((a,b) => b.ev - a.ev);
+    .filter(p => p.hybridScore >= 45)
+    .sort((a,b) => b.hybridScore - a.hybridScore);
 
   for(const p of candidates){
     if(selected.length >= legs) break;
 
-    const playerKey = p.player.toLowerCase();
-    if(usedPlayers.has(playerKey)) continue;
+    const nameKey = normalizeName(p.player);
+
+    // HARD RULE: no repeating names
+    if(usedPlayers.has(nameKey)) continue;
 
     const gameCount = gameCounts[p.gameId] || 0;
     if(gameCount >= 2) continue;
 
-    const marketKey = p.group;
-    usedMarketGroups[marketKey] = usedMarketGroups[marketKey] || 0;
+    usedMarkets[p.group] = usedMarkets[p.group] || 0;
 
-    // In All mode, avoid building every leg from the same prop type.
-    if(activeFilter === "all" && usedMarketGroups[marketKey] >= 3) continue;
+    // In All mode, avoid one prop type dominating the whole parlay
+    if(activeFilter === "all" && usedMarkets[p.group] >= 3) continue;
 
     selected.push(p);
-    usedPlayers.add(playerKey);
+    usedPlayers.add(nameKey);
     gameCounts[p.gameId] = gameCount + 1;
-    usedMarketGroups[marketKey]++;
+    usedMarkets[p.group]++;
   }
 
   if(selected.length < legs){
     document.getElementById("parlay").innerHTML =
-      `<div class="warn">Only found ${selected.length} eligible +EV legs for this filter. Try All or a smaller parlay.</div>`;
+      `<div class="warn">Only found ${selected.length} eligible legs. Try a smaller parlay or switch to All.</div>`;
     return;
   }
 
@@ -321,16 +495,19 @@ function buildParlay(legs){
 
   document.getElementById("parlay").innerHTML = `
     <div class="card">
-      <strong>${legs}-Leg ${activeFilter === "all" ? "Elite" : format(activeFilter)} Parlay</strong>
+      <strong>${legs}-Leg Hybrid Parlay</strong>
       <div class="good">Approx payout: ${american > 0 ? "+" : ""}${american}</div>
-      <div class="small">No duplicate players • Max 2 legs per game • Uses current filter</div>
+      <div class="small">No duplicate players • Max 2 legs per game • Ranked by EV + matchup</div>
     </div>
     ${selected.map((p,i)=>`
       <div class="card">
         <strong>${i+1}. ${p.player}</strong>
         <div>${format(p.market)} Over ${p.line} (${p.odds})</div>
         <div class="small">${p.game} • ${p.book}</div>
-        <div class="good">EV ${(p.ev*100).toFixed(2)}%</div>
+        <div class="small">Vs pitcher: ${p.opponentPitcher || "TBD"}</div>
+        <div>Hybrid Score: <span class="good">${p.hybridScore}</span></div>
+        <div>Matchup Score: ${p.matchupScore}</div>
+        <div class="${p.ev > 0 ? "good" : "bad"}">EV ${(p.ev*100).toFixed(2)}%</div>
       </div>
     `).join("")}
   `;
