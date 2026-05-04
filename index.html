@@ -2,194 +2,352 @@
 <html>
 <head>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>MLB Sharp Parlay Builder</title>
+<title>Elite MLB Batter Props</title>
 
 <style>
 body{background:#071b12;color:white;font-family:Arial;padding:16px}
-input,button{width:100%;padding:12px;margin:7px 0;border:0;border-radius:10px}
+input,button{width:100%;padding:12px;margin:7px 0;border:0;border-radius:10px;font-size:15px}
 button{background:#20c063;color:#031006;font-weight:bold}
+button.active{background:#ffffff;color:#071b12}
 .card{background:#123322;padding:12px;margin:10px 0;border-radius:12px}
-.good{color:#37ff8b}
-.bad{color:#ff7777}
+.good{color:#37ff8b;font-weight:bold}
+.bad{color:#ff7777;font-weight:bold}
 .small{color:#b7d8c3;font-size:13px}
 .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}
+.warn{background:#3b2f12;color:#ffe28a;padding:10px;border-radius:10px;margin:10px 0}
 </style>
 </head>
 
 <body>
 
-<h1>⚾ Sharp MLB Parlay Builder</h1>
+<h1>⚾ Elite MLB Batter Props</h1>
+<div class="small">Real odds • Batter props only • 2–10 leg builder</div>
 
 <input id="apiKey" placeholder="Paste Odds API Key">
 <button onclick="saveKey()">Save Key</button>
-<button onclick="loadAll()">Load Props</button>
+<button onclick="loadAll()">Load Today’s Props</button>
 
 <h2>Filter Props</h2>
 <div class="grid">
-<button onclick="setFilter('all')">All</button>
-<button onclick="setFilter('batter_hits')">Hits</button>
-<button onclick="setFilter('batter_runs_scored')">Runs</button>
-<button onclick="setFilter('batter_rbis')">RBIs</button>
-<button onclick="setFilter('batter_total_bases')">Total Bases</button>
-<button onclick="setFilter('batter_home_runs')">HR</button>
-<button onclick="setFilter('batter_hits_runs_rbis')">H+R+RBI</button>
+<button onclick="setFilter('all',this)" class="active">All</button>
+<button onclick="setFilter('batter_hits',this)">Hits</button>
+<button onclick="setFilter('batter_runs_scored',this)">Runs</button>
+<button onclick="setFilter('batter_rbis',this)">RBIs</button>
+<button onclick="setFilter('batter_total_bases',this)">Total Bases</button>
+<button onclick="setFilter('batter_home_runs',this)">Home Runs</button>
+<button onclick="setFilter('batter_hits_runs_rbis',this)">H+R+RBI</button>
 </div>
 
-<h2>Build Parlay</h2>
+<h2>One-Click Parlay Builder</h2>
 <div class="grid">
-<button onclick="buildParlay(2)">2</button>
-<button onclick="buildParlay(3)">3</button>
-<button onclick="buildParlay(4)">4</button>
-<button onclick="buildParlay(5)">5</button>
-<button onclick="buildParlay(6)">6</button>
-<button onclick="buildParlay(7)">7</button>
-<button onclick="buildParlay(8)">8</button>
-<button onclick="buildParlay(9)">9</button>
-<button onclick="buildParlay(10)">10</button>
+<button onclick="buildParlay(2)">2 Legs</button>
+<button onclick="buildParlay(3)">3 Legs</button>
+<button onclick="buildParlay(4)">4 Legs</button>
+<button onclick="buildParlay(5)">5 Legs</button>
+<button onclick="buildParlay(6)">6 Legs</button>
+<button onclick="buildParlay(7)">7 Legs</button>
+<button onclick="buildParlay(8)">8 Legs</button>
+<button onclick="buildParlay(9)">9 Legs</button>
+<button onclick="buildParlay(10)">10 Legs</button>
 </div>
 
-<h2>Props</h2>
-<div id="props">Load data...</div>
+<h2>Top Props</h2>
+<div id="props">Paste your key and tap Load Today’s Props.</div>
 
-<h2>Parlay</h2>
+<h2>Your Parlay</h2>
 <div id="parlay"></div>
 
 <script>
-let props=[]
-let activeFilter="all"
+let props = [];
+let activeFilter = "all";
 
-const MARKETS=[
-"batter_hits",
-"batter_runs_scored",
-"batter_rbis",
-"batter_total_bases",
-"batter_home_runs",
-"batter_hits_runs_rbis"
-]
+const MARKETS = [
+  "batter_hits",
+  "batter_runs_scored",
+  "batter_rbis",
+  "batter_total_bases",
+  "batter_home_runs",
+  "batter_hits_runs_rbis",
+  "batter_home_runs_alternate",
+  "batter_total_bases_alternate",
+  "batter_hits_alternate"
+];
+
+document.getElementById("apiKey").value = localStorage.getItem("ODDS_KEY") || "";
 
 function saveKey(){
-localStorage.setItem("key",document.getElementById("apiKey").value)
+  const key = document.getElementById("apiKey").value.trim();
+  localStorage.setItem("ODDS_KEY", key);
+  alert("Key saved");
 }
 
-function setFilter(f){
-activeFilter=f
-render()
+function setFilter(filter, btn){
+  activeFilter = filter;
+
+  document.querySelectorAll(".grid button").forEach(b => b.classList.remove("active"));
+  if(btn) btn.classList.add("active");
+
+  render();
 }
 
-function imp(o){return o>0?100/(o+100):Math.abs(o)/(Math.abs(o)+100)}
-function dec(o){return o>0?1+o/100:1+100/Math.abs(o)}
-function ev(p,o){return p*dec(o)-1}
+function impliedProb(odds){
+  odds = Number(odds);
+  return odds > 0 ? 100 / (odds + 100) : Math.abs(odds) / (Math.abs(odds) + 100);
+}
 
-function boost(m){
-if(m==="batter_hits")return .035
-if(m==="batter_total_bases")return .03
-if(m==="batter_hits_runs_rbis")return .025
-if(m==="batter_rbis")return .02
-if(m==="batter_runs_scored")return .02
-if(m==="batter_home_runs")return -.01
-return 0
+function decimalOdds(odds){
+  odds = Number(odds);
+  return odds > 0 ? 1 + odds / 100 : 1 + 100 / Math.abs(odds);
+}
+
+function noVigProb(overOdds, underOdds){
+  const over = impliedProb(overOdds);
+  const under = impliedProb(underOdds);
+  return over / (over + under);
+}
+
+function calcEV(modelProb, odds){
+  return modelProb * decimalOdds(odds) - 1;
+}
+
+function marketGroup(market){
+  if(market.includes("home_runs")) return "batter_home_runs";
+  if(market.includes("total_bases")) return "batter_total_bases";
+  if(market.includes("hits_runs_rbis")) return "batter_hits_runs_rbis";
+  if(market.includes("hits")) return "batter_hits";
+  return market;
+}
+
+function eliteBoost(market, odds, line){
+  let boost = 0;
+  const group = marketGroup(market);
+
+  if(group === "batter_hits") boost += 0.025;
+  if(group === "batter_total_bases") boost += 0.020;
+  if(group === "batter_hits_runs_rbis") boost += 0.018;
+  if(group === "batter_rbis") boost += 0.012;
+  if(group === "batter_runs_scored") boost += 0.012;
+
+  // HRs are high-variance, so regular HR overs get conservative treatment.
+  if(group === "batter_home_runs") boost -= 0.006;
+
+  // Avoid blindly juicing huge plus-money long shots.
+  if(Number(odds) > 250) boost -= 0.015;
+
+  // Alternate lines are harder; reduce fake edge.
+  if(market.includes("alternate")) boost -= 0.012;
+
+  // Very high lines are tougher.
+  if(Number(line) >= 2.5 && group !== "batter_hits_runs_rbis") boost -= 0.01;
+
+  return boost;
 }
 
 async function loadAll(){
-let key=document.getElementById("apiKey").value
-props=[]
-document.getElementById("props").innerHTML="Loading..."
+  const key = document.getElementById("apiKey").value.trim();
 
-let events=await fetch(`https://api.the-odds-api.com/v4/sports/baseball_mlb/events?apiKey=${key}`)
-events=await events.json()
+  if(!key){
+    alert("Paste your Odds API key first");
+    return;
+  }
 
-for(let g of events){
+  props = [];
+  document.getElementById("props").innerHTML = "Loading today’s MLB games...";
+  document.getElementById("parlay").innerHTML = "";
 
-let odds=await fetch(`https://api.the-odds-api.com/v4/sports/baseball_mlb/events/${g.id}/odds?apiKey=${key}&regions=us&markets=${MARKETS.join(",")}`)
-odds=await odds.json()
+  try{
+    const eventsRes = await fetch(
+      `https://api.the-odds-api.com/v4/sports/baseball_mlb/events?apiKey=${key}`
+    );
 
-if(!odds.bookmakers)continue
+    const events = await eventsRes.json();
 
-odds.bookmakers.forEach(b=>{
-b.markets.forEach(m=>{
-let map={}
+    if(!Array.isArray(events)){
+      document.getElementById("props").innerHTML =
+        `<div class="warn">Could not load games. Check your API key or Odds API usage limit.</div>`;
+      return;
+    }
 
-m.outcomes.forEach(o=>{
-let name=o.description||o.name
-if(!map[name])map[name]={}
-if(o.name.toLowerCase().includes("over"))map[name].o=o
-if(o.name.toLowerCase().includes("under"))map[name].u=o
-})
+    for(const game of events){
+      document.getElementById("props").innerHTML =
+        `Loading props: ${game.away_team} @ ${game.home_team}...`;
 
-Object.keys(map).forEach(p=>{
-let x=map[p]
-if(!x.o||!x.u)return
+      const oddsUrl =
+        `https://api.the-odds-api.com/v4/sports/baseball_mlb/events/${game.id}/odds` +
+        `?apiKey=${key}&regions=us&markets=${MARKETS.join(",")}&oddsFormat=american`;
 
-let fair=imp(x.o.price)/(imp(x.o.price)+imp(x.u.price))
-let model=Math.min(.95,Math.max(.01,fair+boost(m.key)))
-let edge=ev(model,x.o.price)
+      const oddsRes = await fetch(oddsUrl);
+      const oddsData = await oddsRes.json();
 
-props.push({
-player:p,
-gameId:g.id,
-game:g.home_team+" vs "+g.away_team,
-market:m.key,
-line:x.o.point||"",
-odds:x.o.price,
-ev:edge
-})
-})
+      if(oddsData.message){
+        console.log("Odds API message:", oddsData.message);
+      }
 
-})
-})
+      if(!oddsData.bookmakers) continue;
+
+      oddsData.bookmakers.forEach(book => {
+        book.markets.forEach(market => {
+          const grouped = {};
+
+          market.outcomes.forEach(outcome => {
+            const player = outcome.description || outcome.name || "";
+            const label = String(outcome.name || "").toLowerCase();
+
+            if(!player) return;
+            if(!grouped[player]) grouped[player] = {};
+
+            if(label.includes("over")) grouped[player].over = outcome;
+            if(label.includes("under")) grouped[player].under = outcome;
+          });
+
+          Object.keys(grouped).forEach(player => {
+            const pair = grouped[player];
+
+            if(!pair.over || !pair.under) return;
+            if(pair.over.price === undefined || pair.under.price === undefined) return;
+
+            const fair = noVigProb(pair.over.price, pair.under.price);
+            let model = fair + eliteBoost(market.key, pair.over.price, pair.over.point);
+
+            model = Math.max(0.01, Math.min(0.95, model));
+
+            const edge = calcEV(model, pair.over.price);
+
+            props.push({
+              player,
+              gameId: game.id,
+              game: `${game.away_team} @ ${game.home_team}`,
+              market: market.key,
+              group: marketGroup(market.key),
+              book: book.title,
+              line: pair.over.point ?? "",
+              odds: pair.over.price,
+              fair,
+              model,
+              ev: edge
+            });
+          });
+        });
+      });
+    }
+
+    props.sort((a,b) => b.ev - a.ev);
+    render();
+
+  }catch(err){
+    document.getElementById("props").innerHTML =
+      `<div class="warn">Error loading props. Check API key, internet, or whether your Odds API plan includes MLB player props.</div>`;
+  }
 }
 
-props.sort((a,b)=>b.ev-a.ev)
-render()
+function getFilteredProps(){
+  if(activeFilter === "all") return props;
+  return props.filter(p => p.group === activeFilter);
 }
 
 function render(){
-let list=activeFilter==="all"?props:props.filter(p=>p.market===activeFilter)
+  const list = getFilteredProps();
 
-document.getElementById("props").innerHTML=
-list.slice(0,50).map(p=>`
-<div class="card">
-<b>${p.player}</b><br>
-${format(p.market)} O${p.line} (${p.odds})<br>
-${p.game}<br>
-<span class="${p.ev>0?"good":"bad"}">EV ${(p.ev*100).toFixed(1)}%</span>
-</div>`).join("")
+  if(!props.length){
+    document.getElementById("props").innerHTML =
+      "No props loaded yet.";
+    return;
+  }
+
+  if(!list.length){
+    document.getElementById("props").innerHTML =
+      `<div class="warn">No ${format(activeFilter)} props found. Some books/API plans do not return every market every day.</div>`;
+    return;
+  }
+
+  document.getElementById("props").innerHTML =
+    list.slice(0,60).map((p,i)=>`
+      <div class="card">
+        <strong>${i+1}. ${p.player}</strong>
+        <div>${format(p.market)} Over ${p.line} (${p.odds})</div>
+        <div class="small">${p.game}</div>
+        <div class="small">${p.book}</div>
+        <div>Model: ${(p.model*100).toFixed(1)}%</div>
+        <div>Fair: ${(p.fair*100).toFixed(1)}%</div>
+        <div class="${p.ev > 0 ? "good" : "bad"}">EV: ${(p.ev*100).toFixed(2)}%</div>
+      </div>
+    `).join("");
 }
 
-function buildParlay(n){
-let used=new Set()
-let gameCount={}
-let picks=[]
+function buildParlay(legs){
+  const selected = [];
+  const usedPlayers = new Set();
+  const usedMarketGroups = {};
+  const gameCounts = {};
 
-for(let p of props){
-if(picks.length>=n)break
-if(p.ev<=0)continue
-if(used.has(p.player))continue
+  const candidates = getFilteredProps()
+    .filter(p => p.ev > 0)
+    .sort((a,b) => b.ev - a.ev);
 
-let g=gameCount[p.gameId]||0
-if(g>=2)continue
+  for(const p of candidates){
+    if(selected.length >= legs) break;
 
-picks.push(p)
-used.add(p.player)
-gameCount[p.gameId]=g+1
-}
+    const playerKey = p.player.toLowerCase();
+    if(usedPlayers.has(playerKey)) continue;
 
-document.getElementById("parlay").innerHTML=
-picks.map((p,i)=>`
-<div class="card">
-${i+1}. ${p.player}<br>
-${format(p.market)} O${p.line} (${p.odds})
-</div>`).join("")
+    const gameCount = gameCounts[p.gameId] || 0;
+    if(gameCount >= 2) continue;
+
+    const marketKey = p.group;
+    usedMarketGroups[marketKey] = usedMarketGroups[marketKey] || 0;
+
+    // In All mode, avoid building every leg from the same prop type.
+    if(activeFilter === "all" && usedMarketGroups[marketKey] >= 3) continue;
+
+    selected.push(p);
+    usedPlayers.add(playerKey);
+    gameCounts[p.gameId] = gameCount + 1;
+    usedMarketGroups[marketKey]++;
+  }
+
+  if(selected.length < legs){
+    document.getElementById("parlay").innerHTML =
+      `<div class="warn">Only found ${selected.length} eligible +EV legs for this filter. Try All or a smaller parlay.</div>`;
+    return;
+  }
+
+  let decimal = 1;
+  selected.forEach(p => decimal *= decimalOdds(p.odds));
+
+  const american =
+    decimal >= 2
+      ? Math.round((decimal - 1) * 100)
+      : Math.round(-100 / (decimal - 1));
+
+  document.getElementById("parlay").innerHTML = `
+    <div class="card">
+      <strong>${legs}-Leg ${activeFilter === "all" ? "Elite" : format(activeFilter)} Parlay</strong>
+      <div class="good">Approx payout: ${american > 0 ? "+" : ""}${american}</div>
+      <div class="small">No duplicate players • Max 2 legs per game • Uses current filter</div>
+    </div>
+    ${selected.map((p,i)=>`
+      <div class="card">
+        <strong>${i+1}. ${p.player}</strong>
+        <div>${format(p.market)} Over ${p.line} (${p.odds})</div>
+        <div class="small">${p.game} • ${p.book}</div>
+        <div class="good">EV ${(p.ev*100).toFixed(2)}%</div>
+      </div>
+    `).join("")}
+  `;
 }
 
 function format(m){
-return m
-.replace("batter_hits","Hits")
-.replace("batter_runs_scored","Runs")
-.replace("batter_rbis","RBIs")
-.replace("batter_total_bases","Total Bases")
-.replace("batter_home_runs","HR")
-.replace("batter_hits_runs_rbis","H+R+RBI")
+  if(m === "all") return "All";
+  return m
+    .replace("batter_hits_runs_rbis","Hits + Runs + RBIs")
+    .replace("batter_total_bases_alternate","Alt Total Bases")
+    .replace("batter_home_runs_alternate","Alt Home Runs")
+    .replace("batter_hits_alternate","Alt Hits")
+    .replace("batter_total_bases","Total Bases")
+    .replace("batter_runs_scored","Runs")
+    .replace("batter_home_runs","Home Runs")
+    .replace("batter_hits","Hits")
+    .replace("batter_rbis","RBIs");
 }
 </script>
 
